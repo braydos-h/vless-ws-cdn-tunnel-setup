@@ -50,9 +50,24 @@ Copy the VLESS URI into your client; the path is URL-encoded. Services (Nginx, X
 ## Using the InvisibleMan XRay client
 You can import the generated VLESS URI into the [InvisibleMan XRay client](https://github.com/InvisibleManVPN/InvisibleMan-XRayClient). Set the domain, UUID, and WebSocket path to match the summary above; TLS with CDN hosting works out of the box.
 
-## Demo videos
+## Demo videos 📹
 - **before.mp4**: live run showing the full automated setup and timing (2m41s on 1vCPU/1GB RAM).
 - **after.mp4**: example of connecting and using the deployed endpoint.
+
+You can play the clips directly in this repo (GitHub’s web UI renders them inline):
+
+<details>
+<summary>👀 Quick previews</summary>
+
+- Before setup: <video src="before.mp4" controls width="480">before.mp4</video>
+- After setup: <video src="after.mp4" controls width="480">after.mp4</video>
+
+</details>
+
+## How it slips past basic DPI 🕵️
+- Traffic rides over HTTPS (TLS) with a normal-looking host and WebSocket path, so shallow packet inspection only sees standard web traffic.
+- Optional cover site content on port 443 keeps the TLS SNI/ALPN negotiation indistinguishable from typical CDN-fronted sites.
+- CDN fronting (e.g., Cloudflare) terminates TLS and forwards WebSocket frames, hiding the origin and making the flow look like regular proxied HTTPS.
 
 ## Troubleshooting tips
 - Verify services: `systemctl status xray`, `systemctl status nginx`.
