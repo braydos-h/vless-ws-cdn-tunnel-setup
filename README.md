@@ -4,6 +4,19 @@ Automated Bash installer that deploys an Xray VLESS-over-WebSocket endpoint behi
 
 ---
 
+## Table of Contents
+- [At a Glance](#at-a-glance)
+- [Requirements](#requirements)
+- [Quick Start](#quick-start)
+- [Installation Flow (What happens under the hood)](#installation-flow-what-happens-under-the-hood)
+- [Output & Connection Details](#output--connection-details)
+- [Client Setup](#client-setup)
+- [Demo Videos](#demo-videos)
+- [How It Slips Past Basic DPI](#how-it-slips-past-basic-dpi)
+- [Troubleshooting](#troubleshooting)
+
+---
+
 ## At a Glance
 
 **What you get**
@@ -18,6 +31,8 @@ Automated Bash installer that deploys an Xray VLESS-over-WebSocket endpoint behi
 - Services (Nginx, Xray, and optionally UFW) are started automatically
 - CDN fronting (e.g., Cloudflare) works immediately once DNS is pointed to the server
 
+[Back to top](#vless-websocket--cdn-tunnel-setup)
+
 ---
 
 ## Requirements
@@ -28,6 +43,8 @@ Automated Bash installer that deploys an Xray VLESS-over-WebSocket endpoint behi
 **Optional but recommended**
 - CDN in front (Cloudflare or similar) after DNS is set
 - Static IPv4 address on the VPS to avoid DNS churn
+
+[Back to top](#vless-websocket--cdn-tunnel-setup)
 
 ---
 
@@ -48,6 +65,8 @@ Automated Bash installer that deploys an Xray VLESS-over-WebSocket endpoint behi
 
 **Tip:** Ensure DNS is resolving to this server **before** running so certificate issuance succeeds on the first try.
 
+[Back to top](#vless-websocket--cdn-tunnel-setup)
+
 ---
 
 ## Installation Flow (What happens under the hood)
@@ -57,6 +76,8 @@ Automated Bash installer that deploys an Xray VLESS-over-WebSocket endpoint behi
 4. Configures Nginx as TLS terminator and reverse proxy to Xray.
 5. (Optional) Generates a lightweight cover site to blend TLS handshakes.
 6. Enables UFW rules if selected and starts services.
+
+[Back to top](#vless-websocket--cdn-tunnel-setup)
 
 ---
 
@@ -75,6 +96,8 @@ Key paths:
 ```
 Copy the VLESS URI into your client; the path is URL-encoded.
 
+[Back to top](#vless-websocket--cdn-tunnel-setup)
+
 ---
 
 ## Client Setup
@@ -82,21 +105,27 @@ Copy the VLESS URI into your client; the path is URL-encoded.
 - Ensure **domain**, **UUID**, **WebSocket path**, and **TLS** match the summary above.
 - CDN fronting with Cloudflare works out of the box as long as DNS points to your server.
 
+[Back to top](#vless-websocket--cdn-tunnel-setup)
+
 ---
 
 ## Demo Videos
 - **before.mp4**: Live run showing the full automated setup and timing (2m41s on 1vCPU/1GB RAM).  
-  https://github.com/user-attachments/assets/1fc29b93-b1f5-465b-b416-b6fe3db50c06
+  [https://github.com/user-attachments/assets/1fc29b93-b1f5-465b-b416-b6fe3db50c06](https://github.com/user-attachments/assets/1fc29b93-b1f5-465b-b416-b6fe3db50c06)
 
 - **after.mp4**: Example of connecting and using the deployed endpoint.  
-  https://github.com/user-attachments/assets/f055a043-8f10-4b8f-bd05-72cfdd860af0
+  [https://github.com/user-attachments/assets/f055a043-8f10-4b8f-bd05-72cfdd860af0](https://github.com/user-attachments/assets/f055a043-8f10-4b8f-bd05-72cfdd860af0)
+
+[Back to top](#vless-websocket--cdn-tunnel-setup)
 
 ---
 
-## How it slips past basic DPI
+## How It Slips Past Basic DPI
 - Traffic rides over HTTPS (TLS) with a normal-looking host and WebSocket path, so shallow packet inspection only sees standard web traffic.
 - Optional cover site content on port 443 keeps the TLS SNI/ALPN negotiation indistinguishable from typical CDN-fronted sites.
 - CDN fronting (e.g., Cloudflare) terminates TLS and forwards WebSocket frames, hiding the origin and making the flow look like regular proxied HTTPS.
+
+[Back to top](#vless-websocket--cdn-tunnel-setup)
 
 ---
 
@@ -114,3 +143,5 @@ Copy the VLESS URI into your client; the path is URL-encoded.
 - Certificates fail: confirm DNS points to the server and rerun once DNS has propagated.
 - Nginx fails to install: the script continues without it, but TLS termination and the cover site will be unavailable.
 - WebSocket 403/404: verify the WebSocket path matches the one you set during installation.
+
+[Back to top](#vless-websocket--cdn-tunnel-setup)
