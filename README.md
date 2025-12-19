@@ -68,6 +68,23 @@ Automated Bash installer that deploys an Xray VLESS-over-WebSocket endpoint behi
    - **UUID** (paste your own or let the script generate one)
    - **UFW rules** for ports 22/80/443
 
+**Non-interactive example**
+
+You can also pre-seed answers (for automation/CI) using flags and `--non-interactive`:
+
+```bash
+sudo ./setup.sh \
+  --domain example.com \
+  --ws-path /edge \
+  --uuid 550e8400-e29b-41d4-a716-446655440000 \
+  --cover-site y \
+  --fresh-install n \
+  --setup-ufw y \
+  --non-interactive
+```
+
+Environment variables with the same names (e.g., `DOMAIN`, `WS_PATH`, `UUID`, `COVER_SITE`, `FRESH_INSTALL`, `SETUP_UFW`) are also honored.
+
 **Tip:** Ensure DNS is resolving to this server **before** running so certificate issuance succeeds on the first try.
 
 [Back to top](#vless-websocket--cdn-tunnel-setup)

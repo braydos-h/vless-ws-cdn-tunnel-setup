@@ -14,6 +14,15 @@ log()  { printf '[*] %s\n' "$*"; }
 warn() { printf '[!] %s\n' "$*"; } 1>&2
 error(){ printf '[X] %s\n' "$*"; } 1>&2
 
+normalize_yn() {
+    # Normalize y/n style inputs; returns empty string if invalid
+    case "$(printf '%s' "$1" | tr 'A-Z' 'a-z')" in
+        y|yes) echo "y" ;;
+        n|no) echo "n" ;;
+        *) echo "" ;;
+    esac
+}
+
 format_duration() {
     # Format seconds into Hh Mm Ss
     local secs=$1
@@ -125,6 +134,25 @@ ensure_root() {
     fi
 }
 
+url_encode() {
+    # Use python3 for robust URL encoding of arbitrary characters
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - <<'PY' "$1"
+import sys, urllib.parse
+print(urllib.parse.quote(sys.argv[1]))
+PY
+        return
+    fi
+
+    if command -v jq >/dev/null 2>&1; then
+        printf '%s' "$1" | jq -sRr @uri
+        return
+    fi
+
+    # Best-effort fallback (encodes spaces and slashes)
+    printf '%s' "$1" | sed 's/%/%25/g; s/ /%20/g; s,/,%%2F,g'
+}
+
 ensure_apt_update() {
     if [ "$APT_UPDATED" -eq 1 ]; then
         return 0
@@ -198,6 +226,7 @@ XRAY_BIN=""
 XRAY_CONFIG_PATH=""
 FRESH_INSTALL="y"
 SETUP_UFW="y"
+NON_INTERACTIVE=0
 TOTAL_STEPS=12 # Keep in sync with progress_step calls in main
 CURRENT_STEP=0
 START_TS=0
@@ -205,9 +234,63 @@ APT_UPDATED=0
 
 #--------------------------- Interactive Input -------------------------------#
 
+parse_args() {
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --domain)
+                DOMAIN="$2"; shift 2 ;;
+            --ws-path)
+                WS_PATH="$2"; shift 2 ;;
+            --uuid)
+                UUID="$2"; shift 2 ;;
+            --cover-site)
+                local val; val=$(normalize_yn "$2")
+                [ -n "$val" ] && COVER_SITE="$val"; shift 2 ;;
+            --fresh-install)
+                local val; val=$(normalize_yn "$2")
+                [ -n "$val" ] && FRESH_INSTALL="$val"; shift 2 ;;
+            --setup-ufw)
+                local val; val=$(normalize_yn "$2")
+                [ -n "$val" ] && SETUP_UFW="$val"; shift 2 ;;
+            --non-interactive|--yes)
+                NON_INTERACTIVE=1; shift ;;
+            --help)
+                cat <<'EOF'
+Usage: setup.sh [options]
+  --domain <domain>         Domain name for the deployment (required in non-interactive mode)
+  --ws-path <path>          WebSocket path (e.g., /ws)
+  --uuid <uuid>             UUID to use; auto-generated if omitted
+  --cover-site <y|n>        Whether to generate the fake cover website
+  --fresh-install <y|n>     Whether to run apt-get update/upgrade as a fresh install
+  --setup-ufw <y|n>         Configure and enable UFW with 22/80/443 allowed
+  --non-interactive|--yes   Accept defaults without prompts (domain is still required)
+  --help                    Show this message
+EOF
+                exit 0 ;;
+            --)
+                shift; break ;;
+            *)
+                warn "Unknown option: $1"; shift ;;
+        esac
+    done
+}
+
 prompt_inputs() {
     # 1. Domain
     while :; do
+        if [ -n "$DOMAIN" ]; then
+            DOMAIN=$(printf '%s' "$DOMAIN" | tr -d '[:space:]')
+            if validate_domain "$DOMAIN"; then
+                break
+            fi
+            echo "Invalid domain format provided."
+            [ "$NON_INTERACTIVE" -eq 1 ] && exit 1
+            DOMAIN=""
+        fi
+        if [ "$NON_INTERACTIVE" -eq 1 ]; then
+            error "--domain is required in non-interactive mode."
+            exit 1
+        fi
         printf 'Enter your domain (e.g. example.com): '
         read -r DOMAIN
         DOMAIN=$(printf '%s' "$DOMAIN" | tr -d '[:space:]')
@@ -223,50 +306,95 @@ prompt_inputs() {
     done
 
     # 2. Fresh install?
-    FRESH_INSTALL=$(prompt_yes_no "Is this a fresh VPS install? (y/n)" "y")
+    if [ -n "$FRESH_INSTALL" ]; then
+        FRESH_INSTALL=$(normalize_yn "$FRESH_INSTALL")
+    fi
+    if [ -z "$FRESH_INSTALL" ]; then
+        if [ "$NON_INTERACTIVE" -eq 1 ]; then
+            FRESH_INSTALL="y"
+        else
+            FRESH_INSTALL=$(prompt_yes_no "Is this a fresh VPS install? (y/n)" "y")
+        fi
+    fi
 
     # 3. Fake cover website?
-    COVER_SITE=$(prompt_yes_no "Would you like to auto-generate a fake cover website? (y/n)" "y")
+    if [ -n "$COVER_SITE" ]; then
+        COVER_SITE=$(normalize_yn "$COVER_SITE")
+    fi
+    if [ -z "$COVER_SITE" ]; then
+        if [ "$NON_INTERACTIVE" -eq 1 ]; then
+            COVER_SITE="y"
+        else
+            COVER_SITE=$(prompt_yes_no "Would you like to auto-generate a fake cover website? (y/n)" "y")
+        fi
+    fi
 
     # 4. WebSocket path
-    printf 'Enter WebSocket path (default /ws): '
-    read -r WS_PATH
-    WS_PATH=$(printf '%s' "$WS_PATH" | tr -d '[:space:]')
     if [ -z "$WS_PATH" ]; then
-        WS_PATH="/ws"
+        if [ "$NON_INTERACTIVE" -eq 1 ]; then
+            WS_PATH="/ws"
+        else
+            printf 'Enter WebSocket path (default /ws): '
+            read -r WS_PATH
+            WS_PATH=$(printf '%s' "$WS_PATH" | tr -d '[:space:]')
+            [ -z "$WS_PATH" ] && WS_PATH="/ws"
+        fi
     fi
+    WS_PATH=$(printf '%s' "$WS_PATH" | tr -d '[:space:]')
     case "$WS_PATH" in
         /*) : ;;
         *)  WS_PATH="/$WS_PATH" ;;
     esac
 
     # 5. UUID
-    local use_custom_uuid
-    use_custom_uuid=$(prompt_yes_no "Would you like to provide a UUID? (y/n)" "n")
-    if [ "$use_custom_uuid" = "y" ]; then
-        while :; do
-            printf 'Enter UUID (e.g. 550e8400-e29b-41d4-a716-446655440000): '
-            read -r UUID
-            UUID=$(printf '%s' "$UUID" | tr -d '[:space:]')
-            if printf '%s' "$UUID" | grep -Eq '^[0-9a-fA-F-]{36}$'; then
-                break
-            else
-                echo "Invalid UUID format. Please try again."
-            fi
-        done
-    else
-        if command -v uuidgen >/dev/null 2>&1; then
-            UUID=$(uuidgen)
-        elif [ -r /proc/sys/kernel/random/uuid ]; then
-            UUID=$(cat /proc/sys/kernel/random/uuid)
+    if [ -n "$UUID" ]; then
+        if ! printf '%s' "$UUID" | grep -Eq '^[0-9a-fA-F-]{36}$'; then
+            echo "Invalid UUID format provided."
+            [ "$NON_INTERACTIVE" -eq 1 ] && exit 1
+            UUID=""
+        fi
+    fi
+    if [ -z "$UUID" ]; then
+        local use_custom_uuid="n"
+        if [ "$NON_INTERACTIVE" -eq 1 ]; then
+            use_custom_uuid="n"
         else
-            warn "Unable to auto-generate UUID (uuidgen and /proc unavailable), falling back to fixed placeholder (NOT recommended for production)."
-            UUID="550e8400-e29b-41d4-a716-446655440000"
+            use_custom_uuid=$(prompt_yes_no "Would you like to provide a UUID? (y/n)" "n")
+        fi
+        if [ "$use_custom_uuid" = "y" ]; then
+            while :; do
+                printf 'Enter UUID (e.g. 550e8400-e29b-41d4-a716-446655440000): '
+                read -r UUID
+                UUID=$(printf '%s' "$UUID" | tr -d '[:space:]')
+                if printf '%s' "$UUID" | grep -Eq '^[0-9a-fA-F-]{36}$'; then
+                    break
+                else
+                    echo "Invalid UUID format. Please try again."
+                fi
+            done
+        else
+            if command -v uuidgen >/dev/null 2>&1; then
+                UUID=$(uuidgen)
+            elif [ -r /proc/sys/kernel/random/uuid ]; then
+                UUID=$(cat /proc/sys/kernel/random/uuid)
+            else
+                warn "Unable to auto-generate UUID (uuidgen and /proc unavailable), falling back to fixed placeholder (NOT recommended for production)."
+                UUID="550e8400-e29b-41d4-a716-446655440000"
+            fi
         fi
     fi
 
     # 6. Firewall
-    SETUP_UFW=$(prompt_yes_no "Configure UFW to allow SSH/HTTP/HTTPS and enable it? (y/n)" "y")
+    if [ -n "$SETUP_UFW" ]; then
+        SETUP_UFW=$(normalize_yn "$SETUP_UFW")
+    fi
+    if [ -z "$SETUP_UFW" ]; then
+        if [ "$NON_INTERACTIVE" -eq 1 ]; then
+            SETUP_UFW="y"
+        else
+            SETUP_UFW=$(prompt_yes_no "Configure UFW to allow SSH/HTTP/HTTPS and enable it? (y/n)" "y")
+        fi
+    fi
 }
 
 #--------------------------- System Preparation ------------------------------#
@@ -358,36 +486,59 @@ check_dns_health() {
     resolved=$(getent hosts "$DOMAIN" 2>/dev/null | awk '{print $1; exit}')
     if [ -n "$resolved" ]; then
         log "System resolver OK: $DOMAIN -> $resolved"
-        return 0
+    else
+        warn "System resolver could not resolve $DOMAIN. Trying fallback DNS servers."
+        apt_install dnsutils >/dev/null 2>&1 || warn "Failed to install dnsutils; continuing with available tools."
+
+        local resolver found_ip
+        for resolver in 1.1.1.1 8.8.8.8 9.9.9.9; do
+            found_ip=$(dig +short @"$resolver" "$DOMAIN" 2>/dev/null | head -n 1)
+            [ -z "$found_ip" ] && found_ip=$(nslookup "$DOMAIN" "$resolver" 2>/dev/null | awk '/^Address: / {print $2; exit}')
+            if [ -n "$found_ip" ]; then
+                resolved="$found_ip"
+                log "Resolved via fallback DNS $resolver: $found_ip"
+                local update_dns
+                if [ "$NON_INTERACTIVE" -eq 1 ]; then
+                    update_dns="n"
+                else
+                    update_dns=$(prompt_yes_no "Use fallback resolvers ($resolver, 8.8.8.8, 1.1.1.1) in /etc/resolv.conf? (y/n)" "y")
+                fi
+                if [ "$update_dns" = "y" ]; then
+                    local resolv_bak="/etc/resolv.conf.bak.$(date +%s)"
+                    cp /etc/resolv.conf "$resolv_bak" 2>/dev/null || true
+                    {
+                        echo "nameserver $resolver"
+                        echo "nameserver 8.8.8.8"
+                        echo "nameserver 1.1.1.1"
+                    } > /etc/resolv.conf 2>/dev/null || warn "Failed to write fallback resolvers to /etc/resolv.conf."
+                    log "Fallback resolvers written. Original copy (if any): $resolv_bak"
+                fi
+                break
+            fi
+        done
     fi
 
-    warn "System resolver could not resolve $DOMAIN. Trying fallback DNS servers."
-    apt_install dnsutils >/dev/null 2>&1 || warn "Failed to install dnsutils; continuing with available tools."
+    if [ -z "$resolved" ]; then
+        warn "Unable to resolve $DOMAIN with any resolver. Certificate issuance may fail until DNS propagates."
+        return 1
+    fi
 
-    local resolver found_ip
-    for resolver in 1.1.1.1 8.8.8.8 9.9.9.9; do
-        found_ip=$(dig +short @"$resolver" "$DOMAIN" 2>/dev/null | head -n 1)
-        [ -z "$found_ip" ] && found_ip=$(nslookup "$DOMAIN" "$resolver" 2>/dev/null | awk '/^Address: / {print $2; exit}')
-        if [ -n "$found_ip" ]; then
-            log "Resolved via fallback DNS $resolver: $found_ip"
-            local update_dns
-            update_dns=$(prompt_yes_no "Use fallback resolvers ($resolver, 8.8.8.8, 1.1.1.1) in /etc/resolv.conf? (y/n)" "y")
-            if [ "$update_dns" = "y" ]; then
-                local resolv_bak="/etc/resolv.conf.bak.$(date +%s)"
-                cp /etc/resolv.conf "$resolv_bak" 2>/dev/null || true
-                {
-                    echo "nameserver $resolver"
-                    echo "nameserver 8.8.8.8"
-                    echo "nameserver 1.1.1.1"
-                } > /etc/resolv.conf 2>/dev/null || warn "Failed to write fallback resolvers to /etc/resolv.conf."
-                log "Fallback resolvers written. Original copy (if any): $resolv_bak"
-            fi
-            return 0
+    local public_ip=""
+    if command -v curl >/dev/null 2>&1; then
+        public_ip=$(curl -4s --max-time 5 https://api.ipify.org || true)
+        [ -z "$public_ip" ] && public_ip=$(curl -4s --max-time 5 https://ifconfig.me || true)
+    fi
+
+    if [ -n "$public_ip" ] && [ "$resolved" != "$public_ip" ]; then
+        warn "DNS for $DOMAIN resolves to $resolved but this server's public IPv4 is $public_ip. Certificates may fail until DNS points here."
+        if [ "$NON_INTERACTIVE" -ne 1 ]; then
+            local continue_anyway
+            continue_anyway=$(prompt_yes_no "Continue despite DNS mismatch? (y/n)" "n")
+            [ "$continue_anyway" = "n" ] && exit 1
         fi
-    done
+    fi
 
-    warn "Unable to resolve $DOMAIN with fallback DNS. Certificate issuance may fail until DNS propagates."
-    return 1
+    return 0
 }
 
 check_port_conflicts() {
@@ -972,6 +1123,7 @@ enable_and_start_services() {
 #--------------------------------- Main --------------------------------------#
 
 main() {
+    parse_args "$@"
     ensure_root "$@"
     check_environment
 
@@ -1013,9 +1165,9 @@ main() {
     progress_step "Starting services"
     enable_and_start_services
 
-    # URL-encode slashes in WS path for URI
+    # URL-encode the WebSocket path for the VLESS URI
     local encoded_path
-    encoded_path=$(printf '%s' "$WS_PATH" | sed 's/\//%2F/g')
+    encoded_path=$(url_encode "$WS_PATH")
 
     local vless_uri
     vless_uri="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&host=$DOMAIN&path=$encoded_path"
@@ -1024,6 +1176,7 @@ main() {
     echo "-------------------- SETUP SUMMARY --------------------"
     echo "Domain       : $DOMAIN"
     echo "WebSocket WS : $WS_PATH"
+    echo "Encoded path : $encoded_path"
     echo "UUID         : $UUID"
     echo
     echo "VLESS URI (URL-encoded path):"
